@@ -1,0 +1,589 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: dennis
+ */
+
+module_load_include('inc', 'olivia_common', 'olivia_common');
+
+
+/**
+ * Implements hook_init()
+ */
+function olivia_common_init() {
+  global $user;
+  drupal_add_js(google_map_field_get_protocol() . 'maps.googleapis.com/maps/api/js?sensor=false', 'external');
+  
+  if (isset($_REQUEST['import'])) {
+	oliva_common_import_news();
+	oliva_common_import_press_release();
+  }
+  
+  if ($user->uid > 0) {
+	$press_contact_message = unserialize(variable_get('mynewsdesk_press_contacts', serialize(array())));
+	if (count($press_contact_message ) > 0) {
+	  //drupal_set_message('Du ser detta meddelande då du är inloggad: ' . implode(', ', $press_contact_message));
+	}
+  }
+}
+
+function olivia_common_find_worker_node($u) {
+  if (!$u) {
+	return false;
+  }
+  
+  $nid = intval(db_query("SELECT n.nid FROM {node} n WHERE n.type = 'staff' AND n.uid = " . $u->uid)->fetchField());
+  if ($nid > 0) {
+	$n = node_load($nid);
+	return $n;
+  } else {
+	return false;
+  }
+}
+
+function oliva_common_import_news()
+{
+
+  $variables_array = olivia_common_get_news_data();
+  
+  foreach($variables_array as $item)
+  {
+	  //create or find contact persons.
+	  $contact_persons_list = array();
+	  
+	  foreach($item['contact_people'] as $contact_person)  {
+		$contact_persons_list[] = oliva_find_contact_person($contact_person);
+	  }
+	  
+	  //create pressreleases.
+	  $existing_nid = intval(db_query("SELECT n.nid FROM {node} n INNER JOIN field_data_field_news_id p ON p.entity_id = n.nid AND p.bundle = 'article' WHERE p.field_news_id_value = '" . $item['id'] . "'")->fetchField());
+
+	  if ($existing_nid == 0) {
+		$node = new stdClass();
+		$node->type = 'article';
+		node_object_prepare($node);
+	  } else {
+		$node = node_load($existing_nid);
+	  }
+	  
+	  $node->created = $item['published_at'];
+	  $node->title = $item['header'];
+	  $node->body['und']['0']['value'] = $item['body'];
+	  $node->body['und']['0']['summary'] = $item['summary'];
+	  $node->body['und']['0']['format'] = 'full_html';
+	  $node->field_news_id['und']['0']['value'] = $item['id'];
+	  $node->language = "sv";
+	  
+	  if ($item['image']) {
+		$full_url = $item['image']; 
+		$image_url = parse_url($item['image']);
+		$image_url = explode('/', $image_url['path']);
+		
+		if (count($image_url) == 4) {
+		  $image_url = $image_url['3'];
+		} else {
+		  $image_url = false;
+		}
+		
+		if ($image_url) {
+		  $file_full = 'sites/default/files/mynewsdesk/' . $image_url;
+		  
+		  //if (!file_exists($file_full)) {
+			$image = file_get_contents($full_url);
+			
+			$file = file_save_data($image, 'public://mynewsdesk/' . $image_url, FILE_EXISTS_REPLACE);
+			$node->field_image = array(LANGUAGE_NONE => array('0' => (array)$file));
+		  //}
+		}
+	  }
+	  
+	  if (count($contact_persons_list) > 0) {
+		$contact_persons_list = end($contact_persons_list);
+		$node->uid = $contact_persons_list;
+	  }
+	  
+	  $node->field_contactpersons['und'] = array();
+	  
+	  if (isset($item['contact_people_nids'])) {
+		if (is_array($item['contact_people_nids'])) {
+		  foreach($item['contact_people_nids'] as $p) {
+			$node->field_contactpersons['und'][] = array('nid' => $p);
+		  }
+		}
+	  }
+	  
+	  if (isset($node->field_news_subjects['und'])) {
+	    unset($node->field_news_subjects['und']);
+	  }
+	  
+	  foreach($item['subjects']['subject'] as $subject) {
+		$node->field_news_subjects['und'][]['value'] = is_null($subject) ? '' : $subject;
+	  }
+	
+	  node_save($node);
+	 
+  }
+}
+
+function oliva_common_import_press_release()
+{
+  
+    $variables_array = olivia_common_get_press_release_data();
+
+	foreach($variables_array as $item)
+	{
+	  	  
+	  //create or find contact persons.
+	  $contact_persons_list = array();
+	  
+	  foreach($item['contact_people'] as $contact_person) {
+		$contact_persons_list[] = oliva_find_contact_person($contact_person);
+	  }	  
+	  	  
+	  //create pressreleases.
+	  $existing_nid = intval(db_query("SELECT n.nid FROM {node} n INNER JOIN field_data_field_press_id p ON p.entity_id = n.nid AND p.bundle = 'pressrelease' WHERE p.field_press_id_value = '" . $item['id'] . "'")->fetchField());
+	  $new = false;
+	  
+	  if ($existing_nid == 0) {
+		$node = new stdClass();
+		$node->type = 'pressrelease';
+		node_object_prepare($node);
+		$new = true;
+	  } else {
+		$node = node_load($existing_nid);
+		$new = false;
+	  }
+	  
+	  $node->created = $item['published_at'];
+	  $node->title = $item['header'];
+	  $node->body['und']['0']['value'] = $item['body'];
+	  $node->body['und']['0']['summary'] = $item['summary'];
+	  $node->body['und']['0']['format'] = 'full_html';
+	  $node->field_press_boilerplate['und']['0']['value'] = $item['boilerplate'];
+	  $node->field_press_id['und']['0']['value'] = $item['id'];
+	  
+	  if ($item['image']) {
+		$full_url = $item['image']; 
+		$image_url = parse_url($item['image']);
+		$image_url = explode('/', $image_url['path']);
+		
+		if (count($image_url) == 4) {
+		  $image_url = $image_url['3'];
+		} else {
+		  $image_url = false;
+		}
+		
+		if ($image_url) {
+		  $file_full = 'sites/default/files/mynewsdesk/' . $image_url;
+		  
+		  //if (!file_exists($file_full)) {
+			$image = file_get_contents($full_url);
+			$file = file_save_data($image, 'public://mynewsdesk/' . $image_url, FILE_EXISTS_REPLACE);
+			$node->field_image = array(LANGUAGE_NONE => array('0' => (array)$file));
+		  //}
+		}
+	  }
+	  
+	  if (count($contact_persons_list) > 0) {
+		$contact_persons_list = end($contact_persons_list);
+		$node->uid = $contact_persons_list;
+	  }
+	  
+	  $node->field_contactpersons['und'] = array();
+	  
+	  if (isset($item['contact_people_nids'])) {
+		if (is_array($item['contact_people_nids'])) {
+		  foreach($item['contact_people_nids'] as $p) {
+			$node->field_contactpersons['und'][] = array('nid' => $p);
+		  }
+		}
+	  }
+      
+	  if (isset($node->field_press_tags['und'])) {
+		unset($node->field_press_tags['und']);
+	  }
+	  
+	  if (isset($item['tags']['tag'])) {
+		if (isset($item['tags']['tag']) && is_array($item['tags']['tag'])) {
+		  foreach($item['tags']['tag'] as $tag) {
+			$node->field_press_tags['und'][]['value'] = is_null($tag) ? '' : $tag;
+		  }
+		}
+	  }
+	  
+	  if (isset($node->field_press_subjects['und'])) {
+		unset($node->field_press_subjects['und']);
+	  }
+	  
+	  if (isset($item['subjects']['subject'])) {
+		if (isset($item['subjects']['subject'] ) && is_array($item['subjects']['subject'] )) {
+		  foreach($item['subjects']['subject'] as $subject) {
+			$node->field_press_subjects['und'][]['value'] = is_null($subject) ? '' : $subject;
+		  }
+		}
+	  }
+	  
+	  node_save($node);
+	}
+}
+
+function oliva_find_contact_person($contact_person)
+{
+  
+	$existing_contact_person_uid = intval(db_query("SELECT n.uid FROM {node} n INNER JOIN field_data_field_contact_person_id p ON p.entity_id = n.nid AND p.bundle = 'staff' WHERE p.field_contact_person_id_value = '" . $contact_person['id'] . "'")->fetchField());
+
+	if ($existing_contact_person_uid > 0) {
+		return $existing_contact_person_uid;
+	} else {
+		return 0;
+	}
+}
+
+function olivia_common_node_view($node, $view_mode, $langcode) {
+  if ($view_mode == "full") {
+
+	switch($node->type) {
+	  case 'business':
+		drupal_goto('var-verksamhet', array('fragment' => 'verksamhet-' . $node->nid));
+	  break;
+	  case 'staff':
+		$categorys = isset($node->field_staff_category['und']) ? $node->field_staff_category['und'] : false;
+		if (!$categorys) {
+		  drupal_goto('medarbetare');
+		} else {
+		  $styrelse = false;
+		  $ledning = false;
+		  $kontaktperson = false;
+		  foreach($categorys as $category) {
+			if ($category['tid'] == 26) {
+			  //styrelse
+			  $styrelse = true;
+			} else if ($category['tid'] == 37) {
+			  //ledning
+			  $ledning = true;
+			} else if ($category['tid'] == 28) {
+			  //kontaktperson
+			  $kontaktperson = true;
+			}
+		  }
+		  
+		  if ($styrelse) {
+			drupal_goto('medarbetare/styrelse', array('fragment' => 'person-' . $node->nid));
+		  } else if ($ledning) {
+			drupal_goto('medarbetare/ledning', array('fragment' => 'person-' . $node->nid));
+		  } else if ($kontaktperson) {
+			drupal_goto('kontakt');
+		  }
+		}
+	  break;
+	  case 'our_history':
+		drupal_goto('var-historia', array('fragment' => 'history-' . $node->nid));
+	  break;
+	}
+  }
+}  
+
+/**
+* Implements hook_entity_info_alter().
+*/
+function olivia_common_entity_info_alter(&$entity_info) {
+  $entity_info['node']['view modes']['small_teaser'] = array(
+    'label' => t('Small teaser'),
+    'custom settings' => TRUE,
+  );
+
+  $entity_info['node']['view modes']['puff_large_img'] = array(
+    'label' => t('Puff Large Image'),
+    'custom settings' => TRUE,
+  );
+
+  $entity_info['node']['view modes']['board_main'] = array(
+    'label' => t('Board main'),
+    'custom settings' => TRUE,
+  );
+}
+
+function oliva_common_clear_mynewsdesk() {
+  $count = 0;
+  $query = db_query("SELECT n.nid FROM {node} WHERE n.type = 'article' OR n.type = 'pressrelease' OR n.type = 'pressrelease_contact_people'");
+  foreach($query as $row) {
+	$count++;
+	node_delete($row->nid);
+  }
+  
+  echo $count . ' pressreleases, contact persons for pressreleases and news has been deleted.';
+}
+
+function olivia_common_cron() {
+  module_load_include('pressrelease_helper.inc', 'olivia_common', 'olivia_common');
+  module_load_include('news_helper.inc', 'olivia_common', 'olivia_common');
+  
+  if (isset($_REQUEST['cleanup']) && $_REQUEST['token'] == 'sDxxsdKssdxx') {
+	oliva_common_clear_mynewsdesk();
+  }
+  
+  olivia_common_import_contact_persons();
+  oliva_common_import_news();
+  oliva_common_import_press_release();
+}
+
+function olivia_common_import_contact_persons() {
+  $url = 'http://www.mynewsdesk.com/services/pressroom/list/ac0923e8dc2db44f1a4a8a4b636e2507/?type_of_media=contact_person&format=json';
+  $content = file_get_contents($url);
+  $json = json_decode($content, true);
+
+  $press_contact_message = unserialize(variable_get('mynewsdesk_press_contacts', serialize(array())));
+  if ($json) {
+	$json = $json['items']['item'];
+	if (count($json) > 0) {
+	  foreach($json as $a) {
+		$has_nid = intval(db_query("SELECT n.nid FROM {node} n INNER JOIN {field_data_field_contact_person_id} c ON c.entity_id = n.nid AND c.bundle = 'staff' WHERE c.field_contact_person_id_value = " . $a['id'])->fetchField());
+		if ($has_nid == 0) {
+		  $m = "Presskontakt '" . $a['name'] . "' med id-nummer " . $a['id'] . ' hos MyNewsDesk kunde inte hittas.';
+		  $press_contact_message[$a['id']] = $m;
+		}
+	  }
+	}
+	
+	variable_set('mynewsdesk_press_contacts', serialize($press_contact_message));
+  }
+}
+
+/**
+ * Implements hook_menu
+ */
+function olivia_common_menu() {
+  $items = array();
+  
+  $items['admin/config/system/header-nodes'] = array(
+	'title' => 'Administer header nodes',
+	'description' => '',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('olivia_common_header_images_form'),
+	'access arguments' => array('administer google analytics'),
+	'type' => MENU_NORMAL_ITEM,
+  );
+  
+  $items['ajax/search/autocomplete'] = array(
+	'title' => 'AJAX - searchautocomplete',
+	'page callback' => 'olivia_common_search_autocomplete',
+	'access arguments' => array('access content'),
+	'delivery callback' => 'drupal_json_output',
+	'type' => MENU_CALLBACK,
+  );
+  
+   $items['mynewsdesk'] = array(
+	'title' => 'Run mynewsdesk import',
+	'page callback' => 'olivia_common_cron',
+	'access arguments' => array('access content'),
+	'type' => MENU_CALLBACK,
+  );
+  
+  return $items;
+}
+
+/**
+* Implements hook_preprocess_node().
+*/
+function olivia_common_preprocess_node(&$vars) {
+  $view_mode = $vars['view_mode'];
+
+  switch ($view_mode) {
+    case 'small_teaser':
+      $vars['theme_hook_suggestions'][] = 'node__' . $vars['type'] . '__small_teaser';
+      break;
+    case 'puff_large_img':
+      $vars['theme_hook_suggestions'][] = 'node__' . $vars['type'] . '__puff_large_image';
+      break;
+    case 'board_main':
+      $vars['theme_hook_suggestions'][] = 'node__' . $vars['type'] . '__board_main';
+      break;
+  }
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function olivia_common_block_info() {
+  $blocks['header_iamge'] = array(
+	'info' => t('Header image'),
+  );
+  
+  $blocks['contact_map'] = array(
+	'info' => t('Contact map'),
+  );
+  
+  $blocks['our_business'] = array(
+	'info' => t('Our business'),
+  );
+  
+    
+  $blocks['news_startpage'] = array(
+	'info' => t('News on startpage'),
+  );
+
+  $blocks['board_members_list'] = array(
+    'info' => t('A collection of board members'),
+  );
+  
+  $blocks['our_business_list'] = array(
+    'info' => t('Our business list'),
+  );
+
+  $blocks['staff_members_list'] = array(
+    'info' => t('A collection of staff members'),
+  );
+
+  $blocks['our_history'] = array(
+    'info' => t('Our history'),
+  );
+
+  $blocks['bottom_block'] = array(
+    'info' => t('Bottom block'),
+  );
+  
+  return $blocks;
+}
+
+function olivia_common_contact_map_render() {
+  return '<div id="map"></div>';
+}
+
+/**
+ * Implements hook_block_view().
+ */
+function olivia_common_block_view($delta = '') {
+  $block = array();
+  
+  switch ($delta) {
+	case 'header_iamge':
+	  $block['content'] = olivia_common_header_render();
+	break;
+	case 'contact_map':
+	  $block['content'] = olivia_common_contact_map_render();
+	break;
+	case 'our_business':
+	  $block['content'] = olivia_common_our_business_render();
+	break;
+	case 'news_startpage':
+	  $block['content'] = olivia_common_news_startpage_render();
+	break;
+    case 'board_members_list':
+      $block['content'] = olivia_common_board_members_list_render();
+	break;
+	case 'our_business_list':
+	  $block['content'] = olivia_common_our_business_list_render();
+	break;
+
+    case 'staff_members_list':
+      $block['content'] = olivia_common_staff_members_list_render();
+      break;
+    case 'our_history':
+      $block['content'] = olivia_common_our_history_render();
+      break;
+
+    case 'bottom_block':
+	  $block['content'] = olivia_common_bottom_block_render();
+	  break;
+  }
+  
+  return $block;
+}
+
+/**
+ * Implements hook_theme().
+ */
+function olivia_common_theme($existing, $type, $theme, $path) {
+  return array(
+    'olivia_common_header' => array(
+      'arguments' => array('items' => array()),
+      'template' => 'templates/olivia_common_header',
+    ),
+    'olivia_common_our_business' => array(
+      'arguments' => array('filter_list' => array()),
+      'template' => 'templates/olivia_common_our_business',
+    ),
+    'olivia_common_news_startpage' => array(
+      'arguments' => array('news_block' => FALSE, 'article' => FALSE),
+      'template' => 'templates/olivia_common_news_startpage',
+    ),
+    'olivia_common_board_members_list' => array(
+      'arguments' => array('board_people' => array()),
+      'template' => 'templates/olivia_common_board_members_list',
+    ),
+    'olivia_common_our_business_list' => array(
+      'arguments' => array('filter' => array(), 'list' => array()),
+      'template' => 'templates/olivia_common_our_business_list',
+    ),
+    'olivia_common_staff_members_list' => array(
+      'arguments' => array('staff_members' => array()),
+      'template' => 'templates/olivia_common_staff_members_list',
+    ),
+    'olivia_common_our_history' => array(
+      'arguments' => array('content' => array()),
+      'template' => 'templates/olivia_common_our_history',
+    ),
+    'olivia_common_bottom_block' => array(
+      'arguments' => array('content' => array()),
+      'template' => 'templates/olivia_common_bottom_block',
+    ),
+  );
+}
+
+function olivia_common_date_field_news_rebuild($element, &$form_state) {
+  global $language;
+  $items = array();
+  
+  $items[""] = 'Välj år (alla)';
+  
+  $query = db_query("SELECT n.created FROM {node} n WHERE n.type = 'article' AND n.status = 1 AND n.language = '" . $language->language . "'");
+  foreach($query as $row) {
+	$y = date('Y', $row->created);
+	$items[$y] = $y;
+  }
+  
+  $element['value']['year']['#options'] = $items;
+  return $element;
+}
+
+function olivia_common_date_field_press_rebuild($element, &$form_state) {
+  global $language;
+  $items = array();
+  
+  $items[""] = 'Välj år (alla)';
+  
+  $query = db_query("SELECT n.created FROM {node} n WHERE n.type = 'pressrelease' AND n.status = 1");
+  foreach($query as $row) {
+	$y = date('Y', $row->created);
+	$items[$y] = $y;
+  }
+  
+  $element['value']['year']['#options'] = $items;
+  return $element;
+}
+
+function olivia_common_views_query_alter(&$view, &$query) {  
+  if($view->name == "staff" && $view->current_display == "block_1") {
+	$query->add_field('node', 'nid', 'node_nid', array('function' => 'groupby'));
+	$query->distinct=TRUE;
+	$view->query->table_queue['taxonomy_index']['join']->extra = array(array('field' => 'tid', 'value' => '28'));
+  }
+}
+/**
+ * Implements hook_form_alter()
+ */
+function olivia_common_form_alter(&$form, $form_state, $form_id) {
+  if($form_id == 'views_exposed_form') {
+	if ($form['#id'] == "views-exposed-form-news-block-2") {
+	  $form['date_filter']['#after_build'][] = 'olivia_common_date_field_news_rebuild';
+	} else if ($form['#id'] == "views-exposed-form-news-block-5") {
+	  $form['date_filter']['#after_build'][] = 'olivia_common_date_field_press_rebuild';
+	}
+  } else if ($form_id == "search_block_form") {
+	$form['search_block_form']['#attributes']['placeholder'] = 'Sök på Team Olivia';
+	$form['search_block_form']['#attributes']['autocomplete'] = 'off';
+  } else if ($form_id == "search_form") {
+	$form['basic']['keys']['#attributes']['placeholder'] = 'Sök på Team Olivia';
+  }
+}
+

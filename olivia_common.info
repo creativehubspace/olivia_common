@@ -1,0 +1,7 @@
+name = "Olivia Common"
+package = "Team Olivia"
+description = "Common things that we use on the site."
+files[] = olivia_common.inc
+
+core = 7.x
+
